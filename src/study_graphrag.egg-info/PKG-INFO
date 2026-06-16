@@ -1,3 +1,16 @@
+Metadata-Version: 2.4
+Name: study-graphrag
+Version: 0.1.0
+Summary: Graph-based Retrieval-Augmented Generation for the biomedical domain using Neo4j
+License: MIT
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: neo4j>=5.14.0
+Requires-Dist: openai>=1.30.0
+Requires-Dist: sentence-transformers>=3.0.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: tqdm>=4.66.0
+
 # Study GraphRAG
 
 > A learning-oriented implementation of **Graph-based Retrieval-Augmented Generation (GraphRAG)** for the **biomedical domain**, using **Neo4j** as the graph database.
@@ -92,9 +105,9 @@ All settings via environment variables (`.env` file):
 | Variable | Default | Description |
 |---|---|---|
 | `NEO4J_URI` | `bolt://localhost:7687` | Neo4j connection |
-| `LLM_MODEL` | `deepseek-chat` | LLM for extraction/generation |
-| `LLM_API_KEY` | (required) | API key (DeepSeek, OpenAI, etc.) |
-| `LLM_BASE_URL` | `https://api.deepseek.com` | API base URL |
+| `LLM_MODEL` | `gpt-4o-mini` | LLM for extraction/generation |
+| `LLM_API_KEY` | (required) | API key |
+| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-Transformers model |
 
 ## Documentation
 

@@ -98,13 +98,13 @@ INIT_QUERIES = [
   "FOR (a:Article) REQUIRE a.pmid IS UNIQUE",
 ]
 
-# Vector index creation (must be run separately after data is present)
-VECTOR_INDEX_QUERY = """
-CREATE VECTOR INDEX entity_embedding IF NOT EXISTS
-  FOR (n:Gene|Drug|Disease|Protein|Pathway|Article)
+# Vector index creation (one per label, for broader Neo4j 5.x compatibility)
+VECTOR_INDEX_TEMPLATE = """
+CREATE VECTOR INDEX entity_embedding_{label} IF NOT EXISTS
+  FOR (n:{label})
   ON (n.embedding)
-  OPTIONS {indexConfig: {
-    `vector.dimensions`: $dimensions,
+  OPTIONS {{indexConfig: {{
+    `vector.dimensions`: {dimensions},
     `vector.similarity_function`: 'cosine'
-  }}
+  }}}}
 """

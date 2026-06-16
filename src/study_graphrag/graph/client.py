@@ -8,8 +8,9 @@ from neo4j import GraphDatabase, Record, Session
 
 from study_graphrag.config import settings
 from study_graphrag.graph.models import (
+  ENTITY_LABELS,
   INIT_QUERIES,
-  VECTOR_INDEX_QUERY,
+  VECTOR_INDEX_TEMPLATE,
   Entity,
   Relation,
 )
@@ -67,13 +68,18 @@ class GraphClient:
     logger.info("Schema initialized.")
 
   def create_vector_index(self) -> None:
-    """Create the vector embedding index if it does not exist."""
-    logger.info("Creating vector index...")
-    self.query(
-      VECTOR_INDEX_QUERY,
-      {"dimensions": settings.VECTOR_DIMENSIONS},
-    )
-    logger.info("Vector index created.")
+    """Create vector embedding indexes for each entity label."""
+    logger.info("Creating vector indexes...")
+    for label in sorted(ENTITY_LABELS):
+      query = VECTOR_INDEX_TEMPLATE.format(
+        label=label, dimensions=settings.VECTOR_DIMENSIONS
+      )
+      try:
+        self.query(query)
+        logger.debug("Vector index created for %s", label)
+      except Exception as exc:
+        logger.warning("Could not create vector index for %s: %s", label, exc)
+    logger.info("Vector indexes created.")
 
   # ------------------------------------------------------------------
   # Entity CRUD
@@ -133,24 +139,34 @@ class GraphClient:
   def search_vector(
     self, embedding: List[float], top_k: int = 10
   ) -> List[Dict[str, Any]]:
-    """Find top-k entities by cosine similarity using the vector index."""
-    query = (
-      "CALL db.index.vector.queryNodes('entity_embedding', $top_k, $embedding) "
-      "YIELD node, score "
-      "RETURN labels(node)[0] AS label, node.name AS name, "
-      "       node.description AS description, score "
-      "ORDER BY score DESC"
-    )
-    results = self.query(query, {"top_k": top_k, "embedding": embedding})
-    return [
-      {
-        "label": r["label"],
-        "name": r["name"],
-        "description": r["description"],
-        "score": r["score"],
-      }
-      for r in results
-    ]
+    """Find top-k entities by cosine similarity across all label indexes."""
+    all_results: List[Dict[str, Any]] = []
+    for label in sorted(ENTITY_LABELS):
+      index_name = f"entity_embedding_{label}"
+      query = (
+        f"CALL db.index.vector.queryNodes('{index_name}', $top_k, $embedding) "
+        "YIELD node, score "
+        f"RETURN '{label}' AS label, node.name AS name, "
+        "       node.description AS description, score "
+        "ORDER BY score DESC"
+      )
+      try:
+        results = self.query(query, {"top_k": top_k, "embedding": embedding})
+        all_results.extend(
+          {
+            "label": r["label"],
+            "name": r["name"],
+            "description": r["description"],
+            "score": r["score"],
+          }
+          for r in results
+        )
+      except Exception as exc:
+        logger.debug("Vector search failed for %s: %s", label, exc)
+
+    # Sort by score descending and take top_k
+    all_results.sort(key=lambda x: x["score"], reverse=True)
+    return all_results[:top_k]
 
   def expand_entity(self, name: str, max_hops: int = 2) -> List[str]:
     """Traverse the graph from an entity and return triple strings."""
@@ -167,10 +183,10 @@ class GraphClient:
       results = self.query(query, {"name": name})
       for record in results:
         path = record["path"]
-        segments = path
-        for i in range(len(segments) - 1):
-          src = segments[i]
-          tgt = segments[i + 1]
+        nodes = path.nodes
+        for i in range(len(nodes) - 1):
+          src = nodes[i]
+          tgt = nodes[i + 1]
           src_labels = ":".join(src.labels)
           tgt_labels = ":".join(tgt.labels)
           triple = (
@@ -198,10 +214,12 @@ class GraphClient:
       results = self.query(query, {"name": name})
       for record in results:
         path = record["path"]
-        for i in range(0, len(path) - 2, 2):
-          src_node = path[i]
-          rel = path[i + 1]
-          tgt_node = path[i + 2]
+        nodes = path.nodes
+        rels = path.relationships
+        for i in range(len(rels)):
+          src_node = nodes[i]
+          rel = rels[i]
+          tgt_node = nodes[i + 1]
           src_labels = ":".join(src_node.labels)
           tgt_labels = ":".join(tgt_node.labels)
           rel_type = rel.type
