@@ -19,3 +19,5 @@ src/study_graphrag/ingestion/relation_extractor.py
 src/study_graphrag/retrieval/__init__.py
 src/study_graphrag/retrieval/embedder.py
 src/study_graphrag/retrieval/graph_searcher.py
+src/study_graphrag/web/__init__.py
+src/study_graphrag/web/app.py

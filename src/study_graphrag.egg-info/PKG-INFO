@@ -10,6 +10,8 @@ Requires-Dist: openai>=1.30.0
 Requires-Dist: sentence-transformers>=3.0.0
 Requires-Dist: python-dotenv>=1.0.0
 Requires-Dist: tqdm>=4.66.0
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn[standard]>=0.32.0
 
 # Study GraphRAG
 
@@ -105,9 +107,9 @@ All settings via environment variables (`.env` file):
 | Variable | Default | Description |
 |---|---|---|
 | `NEO4J_URI` | `bolt://localhost:7687` | Neo4j connection |
-| `LLM_MODEL` | `gpt-4o-mini` | LLM for extraction/generation |
-| `LLM_API_KEY` | (required) | API key |
-| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-Transformers model |
+| `LLM_MODEL` | `deepseek-chat` | LLM for extraction/generation |
+| `LLM_API_KEY` | (required) | API key (DeepSeek, OpenAI, etc.) |
+| `LLM_BASE_URL` | `https://api.deepseek.com` | API base URL |
 
 ## Documentation
 
