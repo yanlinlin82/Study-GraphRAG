@@ -71,15 +71,11 @@ docker compose up -d
 
 Open Neo4j Browser at <http://localhost:7474> (user: `neo4j`, password: `password`).
 
-### 2. Set up Python environment
+### 2. Install
 
 ```bash
-# Create and activate virtual environment
-python -m venv .venv
-source .venv/bin/activate
-
-# Install with pip
-pip install -e .
+# Install with uv (fast Python package manager)
+uv sync
 
 # Copy and edit environment variables
 cp .env.example .env
@@ -89,18 +85,18 @@ cp .env.example .env
 ### 3. Ingest sample data
 
 ```bash
-python scripts/ingest.py --input data/sample_articles.jsonl
+uv run scripts/ingest.py --input data/sample_articles.jsonl
 ```
 
 ### 4. Ask questions
 
 ```bash
 # Single question
-python scripts/query.py --question "What drugs target BRCA1?"
+uv run scripts/query.py --question "What drugs target BRCA1?"
 
 # Interactive mode
-python scripts/query.py
+uv run scripts/query.py
 
 # With full context trace
-python scripts/query.py --question "How does TP53 relate to cancer?" --show-context
+uv run scripts/query.py --question "How does TP53 relate to cancer?" --show-context
 ```

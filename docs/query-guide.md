@@ -82,13 +82,13 @@ Answer with citations to the supporting triples.
 
 ```bash
 # Interactive query
-python scripts/query.py
+uv run scripts/query.py
 
 # Single query
-python scripts/query.py --question "What proteins interact with TP53?"
+uv run scripts/query.py --question "What proteins interact with TP53?"
 
 # With custom parameters
-python scripts/query.py \
+uv run scripts/query.py \
   --question "What pathways is EGFR involved in?" \
   --top-k 15 \
   --hops 2

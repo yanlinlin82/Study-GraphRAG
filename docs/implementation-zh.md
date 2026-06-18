@@ -398,7 +398,7 @@ class Answer:
 ### 启动方式
 
 ```bash
-python scripts/serve.py
+uv run scripts/serve.py
 # 默认 http://0.0.0.0:8080
 # 首次加载需等待 ~10s（Sentence-Transformers 模型下载/加载）
 ```
@@ -452,9 +452,9 @@ Study-GraphRAG/
 │           └── index.html      # 聊天页面
 │
 ├── scripts/                    # CLI 入口
-│   ├── ingest.py               # python scripts/ingest.py --input <file>
-│   ├── query.py                # python scripts/query.py --question "..."
-│   └── serve.py                # python scripts/serve.py
+│   ├── ingest.py               # uv run scripts/ingest.py --input <file>
+│   ├── query.py                # uv run scripts/query.py --question "..."
+│   └── serve.py                # uv run scripts/serve.py
 │
 └── tests/                      # 单元测试占位
 ```
@@ -1076,13 +1076,13 @@ entity_embedding_Gene, entity_embedding_Drug, entity_embedding_Disease, ...
 
 ### 11.6 SOCKS 代理问题
 
-如果终端设置了 SOCKS 代理（`all_proxy=socks5://...`），`pip install` 和 `httpx`（OpenAI/DeepSeek 客户端底层网络库）可能报错：
+如果终端设置了 SOCKS 代理（`all_proxy=socks5://...`），`uv sync` 和 `pip install` 及 `httpx`（OpenAI/DeepSeek 客户端底层网络库）可能报错：
 
 ```
 Missing dependencies for SOCKS support
 ```
 
-解决方案：`pip install pysocks` 安装 SOCKS 支持，或临时 `unset all_proxy`。
+解决方案：`uv add pysocks`（或 `pip install pysocks`）安装 SOCKS 支持，或临时 `unset all_proxy`。
 
 ### 11.7 运行方式总结
 
@@ -1090,26 +1090,27 @@ Missing dependencies for SOCKS support
 # 1. 启动 Neo4j
 docker compose up -d
 
-# 2. 激活虚拟环境（重要！不要直接用系统 Python）
-source .venv/bin/activate
+# 2. 安装依赖（使用 uv）
+uv sync
+cp .env.example .env   # 编辑设置 LLM_API_KEY
 
 # 3. 导入数据（基础示例）
-python scripts/ingest.py --input data/sample_articles.jsonl
+uv run scripts/ingest.py --input data/sample_articles.jsonl
 
 # 4. 导入带 n 元关系场景的测试数据
-python scripts/ingest.py --input data/demo_articles.jsonl
+uv run scripts/ingest.py --input data/demo_articles.jsonl
 
 # 5. CLI 查询
-python scripts/query.py --question "What drugs target BRCA1?"
+uv run scripts/query.py --question "What drugs target BRCA1?"
 
 # 6. Provenance 查询
-python scripts/query.py --question "What relations are in pmid-45678901?" --show-context
+uv run scripts/query.py --question "What relations are in pmid-45678901?" --show-context
 
 # 7. Event 查询
-python scripts/query.py --question "What events involve Imatinib?" --show-context
+uv run scripts/query.py --question "What events involve Imatinib?" --show-context
 
 # 8. Web 界面
-python scripts/serve.py
+uv run scripts/serve.py
 # 访问 http://localhost:8080
 ```
 

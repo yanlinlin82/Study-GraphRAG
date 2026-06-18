@@ -130,7 +130,7 @@ After the retrieval layer upgrade, the following NL questions are supported:
 ### Queries about a specific source document
 
 ```bash
-python scripts/query.py --question "What relations are found in pmid-45678901?"
+uv run scripts/query.py --question "What relations are found in pmid-45678901?"
 ```
 
 Context sent to the LLM will include:
@@ -150,19 +150,19 @@ This allows the LLM to ground its answer in the specific document.
 ### Queries about n-ary events involving an entity
 
 ```bash
-python scripts/query.py --question "Show me all events involving Imatinib"
+uv run scripts/query.py --question "Show me all events involving Imatinib"
 ```
 
 ### Queries comparing evidence across documents
 
 ```bash
-python scripts/query.py --question "Which documents mention the relationship between BRCA1 and Olaparib?"
+uv run scripts/query.py --question "Which documents mention the relationship between BRCA1 and Olaparib?"
 ```
 
 ### Queries with explicit document filtering
 
 ```bash
-python scripts/query.py --question "What did pmid-34567890 say about EGFR and Gefitinib?"
+uv run scripts/query.py --question "What did pmid-34567890 say about EGFR and Gefitinib?"
 ```
 
 ### Output format (--show-context)
@@ -170,7 +170,7 @@ python scripts/query.py --question "What did pmid-34567890 say about EGFR and Ge
 Use `--show-context` to inspect what the LLM receives:
 
 ```bash
-python scripts/query.py \
+uv run scripts/query.py \
   --question "What relations are found in pmid-45678901?" \
   --show-context
 ```

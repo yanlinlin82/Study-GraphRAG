@@ -20,16 +20,15 @@ This project is designed as a study vehicle to understand how graph structures i
 # 1. Start Neo4j
 docker compose up -d
 
-# 2. Install
-python -m venv .venv && source .venv/bin/activate
-pip install -e .
+# 2. Install (uses uv -- fast Python package manager)
+uv sync
 cp .env.example .env   # Edit: set LLM_API_KEY
 
 # 3. Ingest sample data
-python scripts/ingest.py --input data/sample_articles.jsonl
+uv run scripts/ingest.py --input data/sample_articles.jsonl
 
 # 4. Query
-python scripts/query.py --question "What drugs target BRCA1?"
+uv run scripts/query.py --question "What drugs target BRCA1?"
 ```
 
 For detailed documentation, see [docs/index.md](docs/index.md).
@@ -45,20 +44,20 @@ Ingest the dedicated demo data (includes n-ary scenarios) and try provenance-awa
 docker compose down -v && docker compose up -d
 
 # 2. Ingest demo articles
-python scripts/ingest.py --input data/demo_articles.jsonl
+uv run scripts/ingest.py --input data/demo_articles.jsonl
 
 # 3a. Provenance query -- ask about a specific source document
-python scripts/query.py \
+uv run scripts/query.py \
   --question "What relations are found in pmid-45678901?" \
   --show-context
 
 # 3b. N-ary (Event) query -- multi-participant relationships
-python scripts/query.py \
+uv run scripts/query.py \
   --question "What events involve Imatinib?" \
   --show-context
 
 # 3c. Cross-document comparison
-python scripts/query.py \
+uv run scripts/query.py \
   --question "Which documents mention the relationship between BRCA1 and Olaparib?"
 ```
 

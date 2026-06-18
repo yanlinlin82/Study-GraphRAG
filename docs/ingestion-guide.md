@@ -67,13 +67,13 @@ Entities are written to Neo4j using `MERGE` on `name` + `type` to deduplicate. R
 
 ```bash
 # Ingest a single file
-python scripts/ingest.py --input data/sample_articles.jsonl
+uv run scripts/ingest.py --input data/sample_articles.jsonl
 
 # Ingest with custom chunk size
-python scripts/ingest.py --input data/articles.jsonl --chunk-size 2000
+uv run scripts/ingest.py --input data/articles.jsonl --chunk-size 2000
 
 # Dry run (show extractions without writing to Neo4j)
-python scripts/ingest.py --input data/sample_articles.jsonl --dry-run
+uv run scripts/ingest.py --input data/sample_articles.jsonl --dry-run
 ```
 
 ---
