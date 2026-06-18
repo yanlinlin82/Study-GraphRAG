@@ -13,16 +13,71 @@
 
 ## Relationship Types
 
+### Binary Relationships (Edges)
+
+Each binary edge connects exactly two entities. The edge stores two properties:
+- `metadata`: evidence phrase supporting the relation
+- `pmid`: source document identifier, enabling provenance tracking
+
 | Type | Source | Target | Description |
 |---|---|---|---|
 | `ENCODES` | Gene | Protein | Gene expresses a protein |
 | `TARGETS` | Drug | Gene/Protein | Drug acts on gene or protein |
 | `ASSOCIATED_WITH` | Gene/Protein | Disease | Genetic association |
 | `INDICATED_FOR` | Drug | Disease | Drug is approved for a disease |
-| `PARTICIPATES_IN` | Gene/Protein | Pathway | Involved in a pathway |
+| `PARTICIPATES_IN` | Gene/Protein/Event | Pathway / Event | Involved in a pathway or n-ary event |
 | `REGULATES` | Gene/Protein | Gene/Protein | Regulatory relationship |
 | `INTERACTS_WITH` | Protein | Protein | Protein-protein interaction |
-| `MENTIONED_IN` | (any entity) | Article | Entity appears in an article |
+| `MENTIONED_IN` | (any entity or Event) | Article | Entity/event appears in an article |
+
+**Provenance example:** Query all relations from a specific document:
+
+```cypher
+MATCH (s)-[r]->(t) WHERE r.pmid = "pmid-12345678" RETURN s, r, t
+```
+
+### N-ary Relationships (Event Nodes)
+
+When a relationship involves more than two entities (e.g., "Drug A treats Disease B by targeting Gene C"), the binary edge model is insufficient. These are modeled as **Event nodes** with the `:Event` label:
+
+```
+                     ┌─────────────┐
+                     │   Event     │
+                     │ type: TREATS│
+                     │ pmid: ...   │
+                     │ metadata:...│
+                     └──────┬──────┘
+                            │
+              ┌─────────────┼─────────────┐
+              │             │             │
+         ┌────┴────┐  ┌────┴────┐  ┌────┴────┐
+         │ Imatinib│  │   CML   │  │ BCR-ABL │
+         │  Drug   │  │ Disease │  │  Gene   │
+         └─────────┘  └─────────┘  └─────────┘
+                            │
+                       ┌────┴────┐
+                       │ Article │
+                       │pmid: ...│
+                       └─────────┘
+```
+
+The `Event` node stores:
+- `id`: stable deduplication key (`{relation_type}::{sorted_participant_names}`)
+- `type`: the relationship type (one of `RELATION_TYPES`)
+- `metadata`: evidence text
+- `pmid`: source document
+
+Relationships from Event:
+- `(:Entity)-[:PARTICIPATES_IN]->(:Event)` -- each participant
+- `(:Event)-[:MENTIONED_IN]->(:Article)` -- source document
+
+**Provenance example:** Find all events from a specific document:
+
+```cypher
+MATCH (e:Event {pmid: "pmid-12345678"})
+MATCH (p)-[:PARTICIPATES_IN]->(e)
+RETURN e.type, collect(p.name) AS participants
+```
 
 ## Constraints & Indexes
 

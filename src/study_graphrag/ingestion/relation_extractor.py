@@ -11,6 +11,7 @@ from study_graphrag.graph.models import (
   ENTITY_LABELS,
   RELATION_TYPES,
   Entity,
+  HyperRelation,
   Relation,
 )
 
@@ -18,10 +19,10 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are a biomedical relationship extraction assistant.
 
-Given a text and a list of entities, extract all pairwise relationships \
-between those entities.
+Given a text and a list of entities, extract two kinds of relationships:
 
-For each relationship, return a JSON object with:
+### 1. Binary (pairwise) relationships
+For each ordered pair of entities that have a direct relationship, return:
 - "source_name": name of the source entity (exactly as listed)
 - "source_type": type of the source entity
 - "relation": the relationship type, one of {relation_types}
@@ -29,8 +30,18 @@ For each relationship, return a JSON object with:
 - "target_type": type of the target entity
 - "evidence": short phrase from the text supporting this relation
 
-Return a JSON array: [{{"source_name": ..., "source_type": ..., "relation": ..., \
-"target_name": ..., "target_type": ..., "evidence": ...}}, ...]
+### 2. N-ary (multi-participant) relationships
+Sometimes a relationship involves MORE THAN TWO entities acting together \
+(e.g., "Drug A treats Disease B by targeting Gene C"). For these cases, return:
+- "relation_type": the relationship type, one of {relation_types}
+- "participants": list of {{"name": ..., "type": ...}} for ALL entities involved
+- "evidence": short phrase from the text supporting this relationship
+
+---
+
+Return a JSON object with two keys:
+- "binary": [{{binary-relation-objects}}]
+- "hyper": [{{n-ary-relation-objects}}]
 
 Only include relationships that are explicitly or clearly implied by the text.
 """  # noqa: E501
@@ -54,7 +65,9 @@ class RelationExtractor:
       base_url=settings.LLM_BASE_URL,
     )
 
-  def extract(self, text: str, entities: List[Entity]) -> List[Relation]:
+  def extract(
+    self, text: str, entities: List[Entity]
+  ) -> tuple[List[Relation], List[HyperRelation]]:
     """Extract relationships between the given entities.
 
     Args:
@@ -62,7 +75,7 @@ class RelationExtractor:
         entities: Previously extracted entities.
 
     Returns:
-        A list of Relation objects.
+        A tuple (binary_relations, hyper_relations).
     """
     entities_data = [{"name": e.name, "type": e.label} for e in entities]
     relation_types_str = ", ".join(sorted(RELATION_TYPES))
@@ -87,19 +100,50 @@ class RelationExtractor:
       response_format={"type": "json_object"},
     )
 
-    raw = completion.choices[0].message.content or "[]"
+    raw = completion.choices[0].message.content or "{}"
     return self._parse(raw, entities)
 
-  def _parse(self, raw: str, entities: List[Entity]) -> List[Relation]:
-    """Parse the LLM JSON response into Relation objects."""
+  def _parse(
+    self, raw: str, entities: List[Entity]
+  ) -> tuple[List[Relation], List[HyperRelation]]:
+    """Parse the LLM JSON response into Relation and HyperRelation objects."""
     relations: List[Relation] = []
+    hyper_relations: List[HyperRelation] = []
     entity_map = {e.name: e for e in entities}
 
     try:
       data = json.loads(raw)
-      if isinstance(data, dict):
-        data = data.get("relations", data.get("relationships", []))
-      for item in data:
+      if isinstance(data, list):
+        # Backward compat: old format returns a flat array
+        items = data
+      else:
+        # New format: {"binary": [...], "hyper": [...]}
+        items = data.get(
+          "binary", data.get("relations", data.get("relationships", []))
+        )
+        hyper_items = data.get("hyper", data.get("nary", []))
+
+        # Parse hyper relations
+        for item in hyper_items:
+          rel_type = item.get("relation_type", "").strip().upper()
+          participants_raw = item.get("participants", [])
+          participants = []
+          for p in participants_raw:
+            p_name = p.get("name", "").strip()
+            ent = entity_map.get(p_name)
+            if ent:
+              participants.append(ent)
+          if rel_type in RELATION_TYPES and len(participants) >= 2:
+            hyper_relations.append(
+              HyperRelation(
+                relation_type=rel_type,
+                participants=participants,
+                metadata=item.get("evidence", ""),
+              )
+            )
+
+      # Parse binary relations
+      for item in items:
         src_name = item.get("source_name", "").strip()
         tgt_name = item.get("target_name", "").strip()
         rel_type = item.get("relation", "").strip().upper()
@@ -117,4 +161,4 @@ class RelationExtractor:
           )
     except (json.JSONDecodeError, KeyError) as exc:
       logger.warning("Failed to parse LLM relation output: %s", exc)
-    return relations
+    return relations, hyper_relations

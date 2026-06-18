@@ -45,9 +45,13 @@ Each extracted entity includes:
 
 ### 3. Relation Extraction
 
-After entities are extracted, the same text is processed again to extract pairwise relationships. The LLM is asked to produce triples in the form `(source_entity, relationship_type, target_entity)`.
+After entities are extracted, the same text is processed again to extract two kinds of relationships:
 
-Relationships must use one of the defined types (TARGETS, ENCODES, ASSOCIATED_WITH, etc.) to ensure consistency.
+**Binary (pairwise) relationships** -- standard `(source_entity, relationship_type, target_entity)` triples. Each edge in Neo4j stores `metadata` (evidence phrase) and `pmid` (source document) for provenance tracking.
+
+**N-ary (hyper) relationships** -- when a relationship involves more than two entities (e.g., "Drug A treats Disease B by targeting Gene C"), it is reified as an `:Event` node. The Event connects all participants via `PARTICIPATES_IN` edges and links to the source `Article` via `MENTIONED_IN`.
+
+All relationships must use one of the defined types (TARGETS, ENCODES, ASSOCIATED_WITH, etc.) to ensure consistency.
 
 ### 4. Embedding Generation
 

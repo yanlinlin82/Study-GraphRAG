@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
@@ -23,7 +24,13 @@ LINKING_USER_TEMPLATE = "Question: {question}"
 
 
 class GraphSearcher:
-  """Hybrid retriever: entity linking + vector search + graph expansion."""
+  """Hybrid retriever: entity linking + vector search + graph expansion.
+
+  Supports provenance-aware queries: if the question references a PMID,
+  a dedicated source-document lookup is performed.
+  """
+
+  _PMID_PATTERN = re.compile(r"(?:PMID[:\s]*|pmid[:\s]*|^)(\d{8,})")
 
   def __init__(
     self,
@@ -48,7 +55,14 @@ class GraphSearcher:
     """Retrieve graph context for a question.
 
     Returns a string of formatted triples for the generation layer.
+    The context includes provenance information (pmid) when available,
+    and Event-node blocks for n-ary relationships.
     """
+    context_parts: List[str] = []
+
+    # 0. Check if question targets a specific source document
+    target_pmid = self._extract_pmid(question)
+
     # 1. Entity linking
     linked = self._link_entities(question)
     logger.info("Linked entities: %s", linked)
@@ -68,7 +82,17 @@ class GraphSearcher:
     for r in vector_results:
       names_to_expand.add(r["name"])
 
-    # 4. Graph expansion
+    # 4a. Source-specific lookup (if a PMID was detected)
+    if target_pmid:
+      logger.info("Performing source lookup for %s", target_pmid)
+      source_triples = self.graph.get_relations_by_source(target_pmid)
+      if source_triples:
+        context_parts.append("# Relations from " + target_pmid)
+        context_parts.extend(source_triples)
+        # If a specific source is requested, still add entity expansions
+        # so the LLM has full context, but flag the focus.
+
+    # 4b. Graph expansion with provenance
     triples: List[str] = []
     for name in names_to_expand:
       expanded = self.graph.expand_with_relations(name, self.max_hops)
@@ -76,11 +100,40 @@ class GraphSearcher:
 
     # Deduplicate
     triples = list(dict.fromkeys(triples))
+    if triples:
+      context_parts.append("# Graph neighborhood")
+      context_parts.extend(triples)
+
+    # 4c. Event expansion (n-ary relationships)
+    event_blocks: List[str] = []
+    for name in names_to_expand:
+      blocks = self.graph.expand_entity_events(name)
+      event_blocks.extend(blocks)
+
+    if event_blocks:
+      context_parts.append("# Events (n-ary relationships)")
+      context_parts.extend(event_blocks)
 
     context = (
-      "\n".join(triples) if triples else ("No relevant graph context found.")
+      "\n".join(context_parts)
+      if context_parts
+      else "No relevant graph context found."
     )
     return context
+
+  def _extract_pmid(self, question: str) -> Optional[str]:
+    """Extract a PMID-like identifier from the question, if present."""
+    # Look for explicit "pmid-XXXXX" or "PMID: XXXXX" patterns
+    match = self._PMID_PATTERN.search(question)
+    if match:
+      return f"pmid-{match.group(1)}"
+
+    # Also check for "pmid-..." style
+    alt = re.search(r"(?:pmid-|PMID-)(\d+)", question)
+    if alt:
+      return f"pmid-{alt.group(1)}"
+
+    return None
 
   def _link_entities(self, question: str) -> List[Dict[str, str]]:
     """Extract entity mentions from the question using the LLM."""
@@ -124,6 +177,9 @@ class GraphSearcher:
 
     Useful for programmatic access.
     """
+    context_str = self.retrieve(question)
+
+    # Also return the raw pieces for inspection
     linked = self._link_entities(question)
     query_embedding = self.embedder.embed(question)
     vector_results = self.graph.search_vector(query_embedding, self.top_k)
@@ -147,7 +203,5 @@ class GraphSearcher:
       "linked_entities": linked,
       "vector_results": vector_results,
       "triples": list(dict.fromkeys(triples)),
-      "context": "\n".join(triples)
-      if triples
-      else ("No relevant graph context found."),
+      "context": context_str,
     }

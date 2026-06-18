@@ -6,10 +6,12 @@ This project is designed as a study vehicle to understand how graph structures i
 
 ## Features
 
-- **Biomedical data model** -- Genes, proteins, drugs, diseases, pathways, and articles with typed relationships
-- **LLM-based extraction** -- Extract entities and relationships from unstructured text via LLM prompts
+- **Biomedical data model** -- Genes, proteins, drugs, diseases, pathways, articles, and Event nodes with typed relationships
+- **LLM-based extraction** -- Extract entities and relationships (binary + n-ary) from unstructured text
+- **Provenance tracking** -- Every relationship records its source document (``pmid``), enabling evidence traceback
+- **N-ary (hyper) relations** -- Multi-participant relationships reified as ``:Event`` nodes for complex biomedical statements
 - **Hybrid retrieval** -- Combine dense vector search (Sentence-Transformers) with graph traversal (Cypher)
-- **Grounded generation** -- LLM answers are based on retrieved graph triples with evidence
+- **Grounded generation** -- LLM answers cite retrieved triples with provenance and evidence
 - **Neo4j native** -- Uniqueness constraints, vector index, and Cypher-powered graph traversal
 
 ## Quick Start
@@ -32,6 +34,36 @@ python scripts/query.py --question "What drugs target BRCA1?"
 
 For detailed documentation, see [docs/index.md](docs/index.md).
 
+---
+
+## Testing Provenance & N-ary Features
+
+Ingest the dedicated demo data (includes n-ary scenarios) and try provenance-aware queries:
+
+```bash
+# 1. Clear and rebuild Neo4j database
+docker compose down -v && docker compose up -d
+
+# 2. Ingest demo articles
+python scripts/ingest.py --input data/demo_articles.jsonl
+
+# 3a. Provenance query -- ask about a specific source document
+python scripts/query.py \
+  --question "What relations are found in pmid-45678901?" \
+  --show-context
+
+# 3b. N-ary (Event) query -- multi-participant relationships
+python scripts/query.py \
+  --question "What events involve Imatinib?" \
+  --show-context
+
+# 3c. Cross-document comparison
+python scripts/query.py \
+  --question "Which documents mention the relationship between BRCA1 and Olaparib?"
+```
+
+Use ``--show-context`` to inspect the provenance-annotated triples and ``[Event]`` blocks.
+
 ## Screenshot
 
 ![](images/screenshot.png)
@@ -40,6 +72,8 @@ For detailed documentation, see [docs/index.md](docs/index.md).
 
 ```
 User Question
+    │
+    ├── (PMID detected?) ──► get_relations_by_source(pmid)
     │
     ▼
 ┌─────────────────┐
@@ -50,16 +84,18 @@ User Question
 │  Vector Search  │── Embed question, find similar entities
 └────────┬────────┘
          ▼
+┌──────────────────────────┐
+│  Graph Expansion         │
+│  ├─ expand_with_relations│── Binary edges + pmid
+│  └─ expand_entity_events │── Event nodes + participants
+└──────────┬───────────────┘
+           ▼
 ┌─────────────────┐
-│ Graph Expansion │── Traverse Neo4j 1-2 hops for paths
+│ Context Assembly│── Provenance-annotated triples
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│ Context Assembly│── Serialize triples into text
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│ LLM Generation  │── Answer with evidence
+│ LLM Generation  │── Answer grounded in evidence
 └─────────────────┘
 ```
 
@@ -72,7 +108,8 @@ User Question
 | `Drug` | Olaparib, Gefitinib | TARGETS, INDICATED_FOR |
 | `Disease` | Breast Cancer, NSCLC | ASSOCIATED_WITH, INDICATED_FOR |
 | `Pathway` | PI3K/AKT, RAS/RAF | PARTICIPATES_IN |
-| `Article` | PMIDs | MENTIONED_IN (from entities) |
+| `Event` | (reified n-ary relation) | PARTICIPATES_IN (from entities), MENTIONED_IN (to Article) |
+| `Article` | PMIDs | MENTIONED_IN (from entities & events) |
 
 ## Project Structure
 
@@ -109,6 +146,7 @@ All settings via environment variables (`.env` file):
 | [Data Model](docs/data-model.md) | Nodes, relations, constraints, indexes |
 | [Ingestion Guide](docs/ingestion-guide.md) | How to ingest text into Neo4j |
 | [Query Guide](docs/query-guide.md) | How to query and get answers |
+| [Examples](docs/examples.md) | Provenance queries, binary & n-ary relation examples |
 
 ## License
 

@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 from study_graphrag.config import settings
 from study_graphrag.graph.client import GraphClient
-from study_graphrag.graph.models import Entity
+from study_graphrag.graph.models import Entity, HyperRelation, Relation
 from study_graphrag.ingestion.entity_extractor import EntityExtractor
 from study_graphrag.ingestion.relation_extractor import RelationExtractor
 from study_graphrag.retrieval.embedder import Embedder
@@ -93,6 +93,7 @@ class IngestionPipeline:
       "documents": 0,
       "entities_added": 0,
       "relations_added": 0,
+      "hyper_relations_added": 0,
     }
     for doc in tqdm(docs, desc="Ingesting"):
       result = self._process_document(doc, dry_run)
@@ -111,7 +112,8 @@ class IngestionPipeline:
     chunks = self._chunk_text(full_text)
 
     all_entities: Dict[tuple, Entity] = {}
-    all_relations = []
+    all_relations: List[Relation] = []
+    all_hyper_relations: List[HyperRelation] = []
 
     for chunk in chunks:
       # 2. Extract entities
@@ -119,9 +121,16 @@ class IngestionPipeline:
       for e in entities:
         all_entities[e.unique_key] = e
 
-      # 3. Extract relations
-      relations = self.relation_extractor.extract(chunk, entities)
+      # 3. Extract relations (binary + hyper)
+      relations, hyper_relations = self.relation_extractor.extract(
+        chunk, entities
+      )
+      for r in relations:
+        r.pmid = doc_id
+      for h in hyper_relations:
+        h.pmid = doc_id
       all_relations.extend(relations)
+      all_hyper_relations.extend(hyper_relations)
 
     # 4. Wrap in Article entity
     article_entity = Entity(
@@ -136,21 +145,13 @@ class IngestionPipeline:
     for entity in list(all_entities.values()):
       if entity.label != "Article":
         all_relations.append(
-          type(
-            "Relation",
-            (),
-            {
-              "source": entity,
-              "target": article_entity,
-              "type": "MENTIONED_IN",
-              "metadata": "",
-              "to_triple": lambda self: (
-                f"[{self.source.label}] {self.source.name} "
-                f"-[:MENTIONED_IN]-> "
-                f"[{self.target.label}] {self.target.name}"
-              ),
-            },
-          )()
+          Relation(
+            source=entity,
+            target=article_entity,
+            type="MENTIONED_IN",
+            metadata="",
+            pmid=doc_id,
+          )
         )
 
     # 6. Generate embeddings
@@ -172,17 +173,22 @@ class IngestionPipeline:
       for relation in all_relations:
         self.graph.merge_relation(relation)
 
+      for hyper in all_hyper_relations:
+        self.graph.merge_hyper_relation(hyper)
+
     logger.info(
-      "Document %s: %d entities, %d relations",
+      "Document %s: %d entities, %d binary relations, %d hyper relations",
       doc_id,
       len(all_entities),
       len(all_relations),
+      len(all_hyper_relations),
     )
 
     return {
       "documents": 1,
       "entities_added": len(all_entities),
       "relations_added": len(all_relations),
+      "hyper_relations_added": len(all_hyper_relations),
     }
 
   def _chunk_text(self, text: str) -> List[str]:

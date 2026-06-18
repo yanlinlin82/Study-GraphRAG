@@ -94,7 +94,7 @@ Study GraphRAG 是一个**学习型项目**，旨在通过完整实现来理解 
 
 ## 3. 数据模型
 
-### 节点类型（6 种）
+### 节点类型（7 种）
 
 | Label | 含义 | 关键属性 | 示例 |
 |---|---|---|---|
@@ -103,9 +103,16 @@ Study GraphRAG 是一个**学习型项目**，旨在通过完整实现来理解 
 | `Drug` | 药物 | name, drugbank_id, mechanism, embedding | Olaparib, Gefitinib |
 | `Disease` | 疾病 | name, mondo_id, description, embedding | Breast Cancer, NSCLC |
 | `Pathway` | 生物通路 | name, kegg_id, description, embedding | PI3K/AKT, RAS/RAF |
+| `Event` | 重化关系（n 元关系） | id, type, metadata, pmid | TREATS::BCR-ABL::CML::Imatinib |
 | `Article` | 文献 | name(=pmid), title, abstract, year, embedding | pmid-12345678 |
 
-### 关系类型（8 种）
+### 关系类型
+
+#### 二元关系（Edge）
+
+每条 Edge 额外存储两个属性用于溯源：
+- `metadata`: 原文证据片段
+- `pmid`: 来源文献标识
 
 | 类型 | 源 → 目标 | 语义 |
 |---|---|---|
@@ -113,16 +120,31 @@ Study GraphRAG 是一个**学习型项目**，旨在通过完整实现来理解 
 | `TARGETS` | Drug → Gene/Protein | 药物作用于靶点 |
 | `ASSOCIATED_WITH` | Gene/Protein → Disease | 遗传关联 |
 | `INDICATED_FOR` | Drug → Disease | 药物获批适应症 |
-| `PARTICIPATES_IN` | Gene/Protein → Pathway | 参与通路 |
+| `PARTICIPATES_IN` | Gene/Protein/Event → Pathway/Event | 参与通路或 n 元事件 |
 | `REGULATES` | Gene/Protein → Gene/Protein | 调控关系 |
 | `INTERACTS_WITH` | Protein → Protein | 蛋白互作 |
-| `MENTIONED_IN` | 任意实体 → Article | 实体出现于某篇文献 |
+| `MENTIONED_IN` | 任意实体/Event → Article | 实体/事件出现于某篇文献 |
+
+#### N 元关系（Event 节点）
+
+当关系涉及超过两个实体时（如 "Drug A treats Disease B by targeting Gene C"），将其重化为一个 `:Event` 节点：
+
+```
+(Drug Imatinib)-[:PARTICIPATES_IN]->(Event {type: "TREATS", pmid: "..."})<-[...]-(Disease CML)
+                                     (Event)-[:MENTIONED_IN]->(Article {pmid: "..."})
+```
+
+Event 节点属性：
+- `id`: 去重键（`{relation_type}::{sorted_participant_names}`）
+- `type`: 关系类型
+- `metadata`: 证据文本
+- `pmid`: 来源文献
 
 ### 约束与索引
 
 导入管道在首次写入时会自动创建：
 
-- **6 个唯一约束**：每种实体按 `name` 去重（Article 按 `pmid`）
+- **7 个唯一约束**：每种实体按 `name` 去重（Article 按 `pmid`，Event 按 `id`）
 - **6 个向量索引**：每种 Label 各一个，用于余弦相似度搜索（384 维）
 
 ---
@@ -192,15 +214,21 @@ LLM_BASE_URL=http://localhost:11434/v1
     ├──► LLM 实体提取 ──────────► Entity 对象列表
     │       prompt: 从文本中识别 Gene/Protein/Drug/Disease/Pathway
     │
-    ├──► LLM 关系提取 ──────────► Relation 对象列表
-    │       prompt: 在已知实体之间识别关系
+    ├──► LLM 关系提取 ──────────► (List[Relation], List[HyperRelation])
+    │       prompt: 识别二元关系 + n 元关系
+    │       每条关系附带 pmid 标记来源文献
     │
     ├──► 自动关联 Article ──────► 各实体 → MENTIONED_IN → Article
+    │       此关系也带 pmid 属性
+    │
+    ├──► HyperRelation → Event 节点创建
+    │       n 元关系重化为 :Event 节点，通过 PARTICIPATES_IN 连接各参与实体
+    │       通过 MENTIONED_IN 关联到 Article
     │
     ├──► Embedding 生成 ────────► 384 维向量（Sentence-Transformers）
     │       embedding_text = "{label}: {name} - {description}"
     │
-    └──► Neo4j 写入 ────────────► MERGE 去重写入节点和关系
+    └──► Neo4j 写入 ────────────► MERGE 去重写入节点、二元关系、Event 节点
 ```
 
 ### 实现细节
@@ -213,11 +241,17 @@ LLM_BASE_URL=http://localhost:11434/v1
 **RelationExtractor**（`ingestion/relation_extractor.py`）：
 - 将提取到的实体列表传给 LLM，让 LLM 在这些实体之间建立关系
 - 关系类型必须属于 `RELATION_TYPES`，不匹配的自动丢弃
-- 每个关系附带 `evidence` 字段记录原文证据
+- Prompt 同时要求输出两种格式：`{"binary": [...], "hyper": [...]}`
+  - `binary`: 标准二元关系（source_name, relation, target_name, evidence）
+  - `hyper`: n 元关系（relation_type, participants 数组, evidence）
+- 每条关系附带 `evidence` 字段记录原文证据
+- 解析器兼容旧格式（纯数组），支持渐进迁移
 
 **Pipeline**（`ingestion/pipeline.py`）：
 - 每个文档自动创建一个 Article 节点
-- 所有提取的实体通过 `MENTIONED_IN` 关系关联到 Article
+- 所有提取的实体通过 `MENTIONED_IN` 关系关联到 Article，该关系带 `pmid` 属性
+- 二元 `Relation` 和 n 元 `HyperRelation` 对象自动注入 `pmid=doc_id`
+- HyperRelation 通过 `merge_hyper_relation` 写入：创建 Event 节点 → 关联参与者 → 关联来源 Article
 - 支持 `dry_run=True` 模式：打印提取结果但不写入 Neo4j
 - 文本超过 `CHUNK_SIZE` 时自动分块，每块独立提取后合并
 
@@ -229,6 +263,8 @@ LLM_BASE_URL=http://localhost:11434/v1
 
 ```
 用户问题（如 "What drugs target BRCA1?"）
+    │
+    ├── (PMID 检测) ──► 若问题含 PMID 则查 get_relations_by_source(pmid)
     │
     ▼
 ① 实体链接（LLM）
@@ -243,12 +279,17 @@ LLM_BASE_URL=http://localhost:11434/v1
     │   实体链接结果 + 向量搜索结果 → 待扩展实体名集合
     │
     ▼
-④ 图扩展（Neo4j PATH 遍历）
-    │   每个实体 → MATCH path = (s)-[r*1..N]-(t) → 提取三元组
+④ 图扩展（两路并行）
+    │   4a. expand_with_relations ─── 二元边遍历（带 pmid 和 evidence）
+    │   4b. expand_entity_events ───── Event 节点展开（参与者 + 来源 Article）
     │
     ▼
 ⑤ 上下文序列化
-    │   三元组列表 → 文本块（供 Generation 层使用）
+    │   三部分拼接：文献特定结果 + 邻域三元组 + Event 块
+    │   每部分带标注标题，供 LLM 区分信息来源
+    │
+    ▼
+⑥ 传递给 AnswerGenerator
 ```
 
 ### 实现细节
@@ -267,6 +308,24 @@ LLM_BASE_URL=http://localhost:11434/v1
 - 使用 `MATCH path = (s)-[r*1..N]-(t)` 变长路径遍历
 - 使用 Neo4j Python Driver 的 `path.nodes` 和 `path.relationships` 解析路径
 - **注意**：`len(path)` 返回的是关系数而非元素数，不能直接用下标顺序迭代
+- 三元组格式现在包含 `{{pmid: "..."}}` 标注来源文献
+
+**Event 展开**（`graph_client.expand_entity_events`）：
+- 查询与实体相邻的所有 `:Event` 节点
+- 对每个 Event，返回其 `type`、`pmid`、`metadata`、参与者列表、来源 Article
+- 输出格式：
+  ```
+  [Event] TREATS {pmid: "pmid-45678901", evidence: "..."}
+    participant: [Drug] Imatinib
+    participant: [Disease] CML
+    participant: [Gene] BCR-ABL
+    source: [Article] pmid-45678901 (pmid: pmid-45678901)
+  ```
+
+**按文献查询**（`graph_client.get_relations_by_source`）：
+- 当问题中检测到 PMID 时（如 "pmid-45678901"），直接查询 `r.pmid = $pmid`
+- 同时返回该文献产生的二元关系和 Event 节点信息
+- 结果与常规图展开合并后一起传给 LLM
 
 ---
 
@@ -359,7 +418,8 @@ Study-GraphRAG/
 ├── docs/                       # 设计文档（英文）
 │
 ├── data/
-│   └── sample_articles.jsonl   # 3 篇生物医学摘要样本
+│   ├── sample_articles.jsonl   # 3 篇生物医学摘要样本
+│   └── demo_articles.jsonl     # 含 n 元关系场景的测试数据（Imatinib/CML/BCR-ABL）
 │
 ├── src/study_graphrag/
 │   ├── __init__.py             # 版本号
@@ -367,7 +427,7 @@ Study-GraphRAG/
 │   │
 │   ├── graph/                  # 图存储层
 │   │   ├── __init__.py
-│   │   ├── models.py           # Entity/Relation 数据类 + Cypher 模板
+│   │   ├── models.py           # Entity/Relation/HyperRelation 数据类 + Cypher 模板
 │   │   └── client.py           # Neo4j 客户端（CRUD、向量搜索、路径遍历）
 │   │
 │   ├── ingestion/              # 导入层
@@ -379,7 +439,7 @@ Study-GraphRAG/
 │   ├── retrieval/              # 检索层
 │   │   ├── __init__.py
 │   │   ├── embedder.py         # Sentence-Transformers 嵌入
-│   │   └── graph_searcher.py   # 混合检索（实体链接+向量+图扩展）
+│   │   └── graph_searcher.py   # 混合检索（实体链接+向量+图展开+Event展开）
 │   │
 │   ├── generation/             # 生成层
 │   │   ├── __init__.py
@@ -502,30 +562,39 @@ class Entity:
 
 #### 发给 LLM 的 Prompt
 
+现在 Prompt 同时要求 LLM 提取两种关系：
+
 ```
 System: You are a biomedical relationship extraction assistant...
 
-User:
-Text:
-BRCA1 is a tumor suppressor gene... Olaparib targets BRCA1-mutated cells...
+### 1. Binary (pairwise) relationships
+For each ordered pair...
+- "source_name"
+- "source_type"
+- "relation"
+- "target_name"
+- "target_type"
+- "evidence"
 
-Entities:
-[
-  {"name": "BRCA1", "type": "Gene"},
-  {"name": "Olaparib", "type": "Drug"},
-  {"name": "breast cancer", "type": "Disease"}
-]
+### 2. N-ary (multi-participant) relationships
+Sometimes a relationship involves MORE THAN TWO entities...
+- "relation_type"
+- "participants": [{"name": ..., "type": ...}, ...]
+- "evidence"
 
-Extract relationships between these entities.
+---
+Return a JSON object with two keys:
+- "binary": [...]
+- "hyper": [...]
 ```
 
-关键设计：**先提取实体，再提取关系**，分两次 LLM 调用。关系提取时把实体列表注入 Prompt，让 LLM 在已知实体之间建立连接，避免产生空节点引用。
+设计原则不变：**先提取实体，再提取关系**，分两次 LLM 调用。
 
 #### LLM 返回的 JSON 格式
 
 ```json
 {
-  "relations": [
+  "binary": [
     {
       "source_name": "BRCA1",
       "source_type": "Gene",
@@ -542,39 +611,82 @@ Extract relationships between these entities.
       "target_type": "Gene",
       "evidence": "Olaparib targets BRCA1-mutated cells"
     }
+  ],
+  "hyper": [
+    {
+      "relation_type": "TREATS",
+      "participants": [
+        {"name": "Imatinib", "type": "Drug"},
+        {"name": "CML", "type": "Disease"},
+        {"name": "BCR-ABL", "type": "Gene"}
+      ],
+      "evidence": "effectively treats chronic myeloid leukemia by inhibiting BCR-ABL"
+    }
   ]
 }
 ```
 
-也接受 `"relationships"` 作为键名。`source_name` 和 `target_name` **必须精确匹配**实体列表中已有的 `name`，否则被丢弃。
+也接受旧格式（顶层数组或 `{"relations": [...]}`）作为兼容。`source_name` 和 `target_name` **必须精确匹配**实体列表中已有的 `name`，否则被丢弃。
 
-#### Python 数据类（Relation）
+#### Python 数据类
+
+**Relation（二元关系）：**
 
 ```python
 @dataclass
 class Relation:
     source: Entity       # 源实体（必须是已提取的 Entity 对象）
     target: Entity       # 目标实体
-    type: str            # 关系类型（"TARGETS" | "ENCODES" | "ASSOCIATED_WITH" | ...）
+    type: str            # 关系类型
     metadata: str = ""   # 原文证据片段
+    pmid: str = ""      # 来源文献 ID（由 Pipeline 注入）
 
     def to_triple(self) -> str:
-        """序列化为人类可读的三元组"""
         return f"[{self.source.label}] {self.source.name} -[:{self.type}]-> [{self.target.label}] {self.target.name}"
-        # 输出示例: [Gene] BRCA1 -[:TARGETS]-> [Drug] Olaparib
+```
+
+**HyperRelation（n 元关系）：**
+
+```python
+@dataclass
+class HyperRelation:
+    relation_type: str          # 关系类型，同 RELATION_TYPES
+    participants: List[Entity]  # 所有参与实体（>= 2）
+    metadata: str = ""          # 原文证据片段
+    pmid: str = ""             # 来源文献 ID（由 Pipeline 注入）
+
+    @property
+    def event_id(self) -> str:
+        """去重键：{relation_type}::{sorted_participant_names}"""
+        names = sorted(p.name for p in self.participants)
+        return f"{self.relation_type}::{'::'.join(names)}"
 ```
 
 ---
 
 ### 10.4 三元组上下文格式
 
-检索管道输出的上下文是**纯文本三元组列表**，每行一个三元组，格式固定：
+检索管道输出的上下文是**结构化文本**，含最多三个段落，每段带标题供 LLM 区分来源。
 
+#### 段落一：按文献查询结果（若问题含 PMID）
 ```
+# Relations from pmid-45678901
+[Drug] Imatinib -[:TARGETS {pmid: "pmid-45678901", evidence: "inhibiting..."}]-> [Protein] BCR-ABL
+[Gene] BCR-ABL -[:ENCODES {pmid: "pmid-45678901"}]-> [Protein] BCR-ABL
+[Event] TREATS {pmid: "pmid-45678901", evidence: "..."}
+  participant: [Drug] Imatinib
+  participant: [Disease] CML
+  participant: [Gene] BCR-ABL
+  source: [Article] pmid-45678901 (pmid: pmid-45678901)
+```
+
+#### 段落二：邻域展开（含 provenance）
+```
+# Graph neighborhood
 [Gene] BRCA1 -[:ASSOCIATED_WITH]-> [Disease] breast cancer
-[Gene] BRCA1 -[:TARGETS]-> [Drug] Olaparib
+[Gene] BRCA1 -[:TARGETS {pmid: "pmid-12345678"}]-> [Drug] Olaparib
 [Drug] Olaparib -[:INDICATED_FOR]-> [Disease] breast cancer
-[Drug] Olaparib -[:MENTIONED_IN]-> [Article] pmid-12345678
+[Drug] Olaparib -[:MENTIONED_IN {pmid: "pmid-12345678"}]-> [Article] pmid-12345678
 ```
 
 **格式约定**：
@@ -582,12 +694,25 @@ class Relation:
 | 部分 | 格式 | 示例 |
 |---|---|---|
 | 源节点 | `[Label] 名称` | `[Gene] BRCA1` |
-| 关系 | `-[:TYPE]->` | `-[:TARGETS]->` |
+| 关系 | `-[:TYPE]->` 或 `-[:TYPE {pmid: "...", evidence: "..."}]->` | `-[:TARGETS {pmid: "pmid-12345678"}]->` |
 | 目标节点 | `[Label] 名称` | `[Drug] Olaparib` |
+| Event | `[Event] TYPE {pmid: "..."}` + 参与者列表 | `[Event] TREATS {pmid: "..."}  participant: [Drug]...` |
+
+#### 段落三：Event 节点块（n 元关系）
+```
+# Events (n-ary relationships)
+[Event] TREATS {pmid: "pmid-45678901"}
+  participant: [Drug] Imatinib
+  participant: [Disease] CML
+  participant: [Gene] BCR-ABL
+  source: [Article] pmid-45678901 (pmid: pmid-45678901)
+```
 
 这种格式有两个用途：
 1. 直接作为 LLM 生成答案的上下文（模型能自然理解）
 2. 人类可读，用于调试和追溯证据
+
+上下文中的 `pmid` 标注让 LLM 能够回答诸如 "pmid-45678901 中提到了哪些关系？" 这类溯源问题。
 
 ---
 
@@ -648,10 +773,31 @@ RETURN n.name
 MATCH (s:Gene {name: "BRCA1"})
 MATCH (t:Drug {name: "Olaparib"})
 MERGE (s)-[r:TARGETS]->(t)
-SET r.metadata = "Olaparib targets BRCA1-mutated cells"
+SET r.metadata = "Olaparib targets BRCA1-mutated cells",
+    r.pmid = "pmid-12345678"
 ```
 
-关系写入前需要先确保两个端点节点已存在，因此管道中**先批量写入所有实体，再批量写入所有关系**。
+关系写入前需要先确保两个端点节点已存在，因此管道中**先批量写入所有实体，再批量写入所有关系**。升级后每条关系额外记录 `pmid` 字段用于溯源。
+
+#### Event 节点写入
+
+n 元关系被重化为 `:Event` 节点，通过三条 Cypher 完成：
+
+```cypher
+-- 1. 创建/更新 Event 节点
+MERGE (e:Event {id: "TREATS::BCR-ABL::CML::Imatinib"})
+SET e.type = "TREATS", e.metadata = "effectively treats...", e.pmid = "pmid-45678901"
+
+-- 2. 关联参与者
+MATCH (e:Event {id: "TREATS::BCR-ABL::CML::Imatinib"})
+MATCH (n {name: "Imatinib"})
+MERGE (n)-[:PARTICIPATES_IN]->(e)
+
+-- 3. 关联来源文献
+MATCH (e:Event {id: "TREATS::BCR-ABL::CML::Imatinib"})
+MATCH (a:Article {pmid: "pmid-45678901"})
+MERGE (e)-[:MENTIONED_IN]->(a)
+```
 
 #### 完整节点示例（Neo4j 中的数据结构）
 
@@ -709,12 +855,12 @@ SET r.metadata = "Olaparib targets BRCA1-mutated cells"
 
   "triples": [
     "[Gene] BRCA1 -[:ASSOCIATED_WITH]-> [Disease] breast cancer",
-    "[Gene] BRCA1 -[:TARGETS]-> [Drug] Olaparib",
+    "[Gene] BRCA1 -[:TARGETS {pmid: \"pmid-12345678\"}]-> [Drug] Olaparib",
     "[Gene] BRCA1 -[:TARGETS]-> [Drug] Niraparib",
     "[Gene] BRCA1 -[:TARGETS]-> [Drug] Rucaparib"
   ],
 
-  "context": "[Gene] BRCA1 -[:ASSOCIATED_WITH]-> [Disease] breast cancer\n[Gene] BRCA1 -[:TARGETS]-> [Drug] Olaparib\n..."
+  "context": "# Graph neighborhood\n[Gene] BRCA1 -[:ASSOCIATED_WITH]-> [Disease] breast cancer\n[Gene] BRCA1 -[:TARGETS {pmid: \"pmid-12345678\"}]-> [Drug] Olaparib\n..."
 }
 ```
 
@@ -832,23 +978,30 @@ LLM 实体提取输出 → JSON → Entity 对象列表
 LLM 关系提取输入 → 原文 + 实体列表（JSON 序列化）
   │ Text + [{"name":"BRCA1","type":"Gene"}, ...]
   ▼
-LLM 关系提取输出 → JSON → Relation 对象列表
-  │ [Relation(BRCA1, breast cancer, "ASSOCIATED_WITH"), ...]
+LLM 关系提取输出 → JSON → (List[Relation], List[HyperRelation])
+  │ binary: [Relation(BRCA1, breast cancer, "ASSOCIATED_WITH"), ...]
+  │ hyper:  [HyperRelation("TREATS", [Imatinib, CML, BCR-ABL])]
   ▼
-自动附加 Article + MENTIONED_IN 关系
+Pipeline 注入 pmid=doc_id → 每个 Relation/HyperRelation 获得来源标记
+  ▼
+自动附加 Article + MENTIONED_IN 关系（也带 pmid）
+  ▼
+HyperRelation → Event 节点创建（三条 Cypher）
+  │ MERGE Event → MATCH 参与者 → MERGE PARTICIPATES_IN → MERGE MENTIONED_IN
   ▼
 Embedding 生成
   │ Entity.embedding_text → Sentence-Transformers → List[float] × 384
   ▼
 Neo4j MERGE 写入
   │ (Gene {name:"BRCA1", embedding:[...]})
-  │ (Gene)-[:TARGETS]->(Drug {name:"Olaparib"})
+  │ (Gene)-[:TARGETS {pmid:"pmid-12345678"}]->(Drug {name:"Olaparib"})
+  │ (Event {type:"TREATS", pmid:"pmid-45678901"})<-[PARTICIPATES_IN]-(Imatinib)
   ▼
-用户查询 → 实体链接 + 向量搜索 + 图扩展
-  │ → 三元组列表 → 换行拼接 → context 文本
+用户查询 → PMID 检测 → 实体链接 + 向量搜索 + 图展开 + Event 展开
+  │ → 三段落上下文（文献结果 + 邻域三元组 + Event 块）
   ▼
 LLM 答案生成
-  │ System + Context + Question → Answer(answer, context, model)
+  │ System + Context(with pmid) + Question → Answer(answer, context, model)
   ▼
 JSON 响应 → 浏览器渲染
   │ {"question":"...", "answer":"...", "context":"...", ...}
@@ -940,13 +1093,22 @@ docker compose up -d
 # 2. 激活虚拟环境（重要！不要直接用系统 Python）
 source .venv/bin/activate
 
-# 3. 导入数据
+# 3. 导入数据（基础示例）
 python scripts/ingest.py --input data/sample_articles.jsonl
 
-# 4. CLI 查询
+# 4. 导入带 n 元关系场景的测试数据
+python scripts/ingest.py --input data/demo_articles.jsonl
+
+# 5. CLI 查询
 python scripts/query.py --question "What drugs target BRCA1?"
 
-# 5. Web 界面
+# 6. Provenance 查询
+python scripts/query.py --question "What relations are in pmid-45678901?" --show-context
+
+# 7. Event 查询
+python scripts/query.py --question "What events involve Imatinib?" --show-context
+
+# 8. Web 界面
 python scripts/serve.py
 # 访问 http://localhost:8080
 ```
@@ -959,3 +1121,9 @@ python scripts/serve.py
 - **多轮对话**：维护 session 上下文，支持追问
 - **可视化**：集成 Neo4j Bloom 或 D3.js 展示知识子图
 - **批处理**：多文档并行提取，利用 asyncio 加速导入
+
+> **已实现的功能**（本版本）：
+> - ✅ 关系级 provenance 追踪（`r.pmid`）
+> - ✅ N 元（Hyper）关系重化为 `:Event` 节点
+> - ✅ NL 查询中的 PMID 自动检测与按文献过滤
+> - ✅ Event 节点展开检索
