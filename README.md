@@ -32,6 +32,10 @@ python scripts/query.py --question "What drugs target BRCA1?"
 
 For detailed documentation, see [docs/index.md](docs/index.md).
 
+## Screenshot
+
+![](images/screenshot.png)
+
 ## Architecture
 
 ```
