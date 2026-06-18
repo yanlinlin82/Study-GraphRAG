@@ -57,6 +57,14 @@ All relationships must use one of the defined types (TARGETS, ENCODES, ASSOCIATE
 
 For each entity, a text string is constructed as `{label}: {name} - {description}` and passed through Sentence-Transformers to produce a 384-dimensional embedding vector. This vector is stored as a property on the node for vector similarity search.
 
+> **Note:** The first time you run ingestion, Sentence-Transformers downloads the `EMBEDDING_MODEL` from HuggingFace Hub (~90MB) and caches it under `~/.cache/huggingface/hub/`. Subsequent runs perform lightweight HEAD requests to verify the cache is still valid, but do not re-download the model.
+>
+> To disable these network requests entirely (offline mode), set the environment variable before running:
+>
+> ```bash
+> HF_HUB_OFFLINE=1 uv run scripts/ingest.py --input data/sample_articles.jsonl
+> ```
+
 ### 5. Graph Writing
 
 Entities are written to Neo4j using `MERGE` on `name` + `type` to deduplicate. Relationships use `MERGE` as well to avoid duplicate edges.
